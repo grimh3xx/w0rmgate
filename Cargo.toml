@@ -1,0 +1,22 @@
+[package]
+name = "wyrmhole"
+version = "0.1.0"
+edition = "2021"
+authors = ["grimh3xx"]
+description = "Túnel SOCKS5 reverso para pivoting em pentest autorizado: agente liga de volta, operador navega a rede interna."
+license = "MIT"
+repository = "https://github.com/grimh3xx/wyrmhole"
+keywords = ["pentest", "pivoting", "socks5", "tunnel", "proxy"]
+
+[[bin]]
+name = "wyrmhole"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.42", features = ["rt-multi-thread", "net", "macros", "io-util", "sync", "time"] }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true
