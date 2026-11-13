@@ -1,4 +1,4 @@
-//! Handshake SOCKS5 mínimo (CONNECT, sem auth) do lado servidor.
+//! Minimal SOCKS5 server-side handshake (CONNECT, no auth).
 use anyhow::{anyhow, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -8,24 +8,24 @@ pub async fn handshake(s: &mut TcpStream) -> Result<String> {
     let mut head = [0u8; 2];
     s.read_exact(&mut head).await?;
     if head[0] != 0x05 {
-        return Err(anyhow!("não é SOCKS5"));
+        return Err(anyhow!("not SOCKS5"));
     }
     let nmethods = head[1] as usize;
     let mut methods = vec![0u8; nmethods];
     s.read_exact(&mut methods).await?;
-    // responde: sem autenticação
+    // reply: no authentication
     s.write_all(&[0x05, 0x00]).await?;
 
     // request
     let mut req = [0u8; 4];
     s.read_exact(&mut req).await?;
     if req[0] != 0x05 {
-        return Err(anyhow!("versão inválida na request"));
+        return Err(anyhow!("invalid version in request"));
     }
     if req[1] != 0x01 {
-        // só CONNECT
+        // CONNECT only
         s.write_all(&[0x05, 0x07, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
-        return Err(anyhow!("comando não suportado"));
+        return Err(anyhow!("unsupported command"));
     }
     let host = match req[3] {
         0x01 => {
@@ -49,13 +49,13 @@ pub async fn handshake(s: &mut TcpStream) -> Result<String> {
                 .collect();
             format!("[{}]", seg.join(":"))
         }
-        _ => return Err(anyhow!("atyp inválido")),
+        _ => return Err(anyhow!("atyp invalid")),
     };
     let mut p = [0u8; 2];
     s.read_exact(&mut p).await?;
     let port = u16::from_be_bytes(p);
 
-    // sucesso (bind addr dummy)
+    // success (dummy bind addr)
     s.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await?;
     Ok(format!("{host}:{port}"))
 }
