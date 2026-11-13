@@ -6,6 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const OPEN: u8 = 1;
 pub const DATA: u8 = 2;
 pub const CLOSE: u8 = 3;
+pub const UDP: u8 = 4;
 
 /// Hard cap on a single frame payload (16 MiB) to bound memory on a hostile peer.
 const MAX_FRAME: usize = 16 * 1024 * 1024;
@@ -27,6 +28,24 @@ impl Frame {
     pub fn close(id: u32) -> Self {
         Frame { id, kind: CLOSE, data: Vec::new() }
     }
+    /// A UDP datagram tagged with its peer "host:port".
+    pub fn udp(id: u32, addr: &str, data: &[u8]) -> Self {
+        let mut payload = (addr.len() as u16).to_be_bytes().to_vec();
+        payload.extend_from_slice(addr.as_bytes());
+        payload.extend_from_slice(data);
+        Frame { id, kind: UDP, data: payload }
+    }
+}
+
+/// Splits a UDP frame payload into (peer addr, datagram).
+pub fn parse_udp(data: &[u8]) -> Option<(String, &[u8])> {
+    if data.len() < 2 {
+        return None;
+    }
+    let n = u16::from_be_bytes([data[0], data[1]]) as usize;
+    let addr = data.get(2..2 + n)?;
+    let payload = data.get(2 + n..)?;
+    Some((String::from_utf8_lossy(addr).to_string(), payload))
 }
 
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Frame> {
@@ -80,6 +99,36 @@ mod tests {
             write_frame(&mut buf, &f).await.unwrap();
             let mut cur = Cursor::new(buf);
             assert_eq!(read_frame(&mut cur).await.unwrap(), f);
+        }
+    }
+
+    #[test]
+    fn udp_roundtrip() {
+        let f = Frame::udp(5, "1.2.3.4:53", b"\x00\x01query");
+        let (addr, data) = parse_udp(&f.data).unwrap();
+        assert_eq!(addr, "1.2.3.4:53");
+        assert_eq!(data, b"\x00\x01query");
+    }
+
+    #[test]
+    fn parse_udp_rejects_truncated() {
+        assert!(parse_udp(&[0x00]).is_none());
+        assert!(parse_udp(&[0x00, 0x09, b'a']).is_none()); // claims 9, has 1
+    }
+
+    #[tokio::test]
+    async fn fuzz_read_frame_no_panic() {
+        let mut x: u64 = 0x00C0_FFEE_1234_5678;
+        for _ in 0..5000 {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            let len = (x as usize) % 64;
+            let mut buf: Vec<u8> = (0..len).map(|i| (x >> (i % 56)) as u8).collect();
+            // bound the declared length field so the test stays fast
+            if buf.len() >= 9 {
+                buf[5] = 0; buf[6] = 0; buf[7] = 0; buf[8] = (x as u8) & 0x1F;
+            }
+            let mut cur = Cursor::new(buf);
+            let _ = read_frame(&mut cur).await;
         }
     }
 

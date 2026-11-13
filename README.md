@@ -32,6 +32,7 @@ proxychains / browser ─► 127.0.0.1:1080
 
 Multiplexes many SOCKS connections over one TCP channel
 (`[id][kind][len][data]` frames) with backpressure and a dial timeout.
+Supports both **CONNECT** and **UDP ASSOCIATE**.
 
 ## Usage
 
@@ -57,8 +58,10 @@ curl --socks5-hostname 127.0.0.1:1080 http://internal.local
 ## Tests
 
 ```sh
-cargo test --release      # frame codec round-trips
-./tests/e2e.sh            # operator+agent+SOCKS through to a local origin (8/8)
+cargo test --release      # frame codec, UDP header parse/build, fuzz
+./tests/e2e.sh            # CONNECT through to a local origin (8/8)
+./tests/soak.sh           # 60 concurrent requests through the tunnel
+./tests/udp.sh            # SOCKS5 UDP associate: datagram echoed through the tunnel
 ```
 
 ## Build

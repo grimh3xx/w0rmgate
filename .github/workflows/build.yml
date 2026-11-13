@@ -22,3 +22,17 @@ jobs:
         with:
           name: w0rmgate-linux-x64
           path: target/release/w0rmgate
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Reverse SOCKS tunnel e2e
+        run: ./tests/e2e.sh
+      - name: Soak (60 concurrent)
+        run: ./tests/soak.sh
+      - name: UDP associate
+        run: ./tests/udp.sh
