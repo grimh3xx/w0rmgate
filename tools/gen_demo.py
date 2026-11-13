@@ -83,13 +83,13 @@ class Session:
 
 def build():
     s = Session()
-    s.out([seg("w0rmgate", "cyan", True), seg(" — reverse SOCKS pivot", "muted")], dur=1)
+    s.out([seg("w0rmgate", "cyan", True), seg(" \u2014 reverse SOCKS pivot", "muted")], dur=1)
     s.blank()
     s.type("w0rmgate server --control 0.0.0.0:7000 --socks 127.0.0.1:1080")
     s.enter()
-    s.out([seg("[*] controle escutando em 0.0.0.0:7000 (aguardando agente)", "text")])
-    s.out([seg("[+] agente conectado: ", "green", True), seg("198.51.100.7:51044", "white")])
-    s.out([seg("[*] SOCKS5 pronto em ", "text"), seg("127.0.0.1:1080", "cyan", True)])
+    s.out([seg("[*] control listening on 0.0.0.0:7000 (waiting for agent)", "text")])
+    s.out([seg("[+] agent connected: ", "green", True), seg("198.51.100.7:51044", "white")])
+    s.out([seg("[*] SOCKS5 ready on ", "text"), seg("127.0.0.1:1080", "cyan", True)])
     s.blank()
     s.type("proxychains -q nmap -sT 10.10.20.0/24")
     s.enter()
@@ -98,7 +98,7 @@ def build():
     s.out([seg("  445/tcp  open  microsoft-ds", "text")])
     s.out([seg("Nmap scan report for 10.10.20.12", "text")])
     s.out([seg("  3389/tcp open  ms-wbt-server", "text")])
-    s.out([seg("  via wyrm tunnel — 2 hosts internos", "green", True)])
+    s.out([seg("  via wyrm tunnel \u2014 2 internal hosts", "green", True)])
     s.cursor_hold()
     return s
 

